@@ -1,16 +1,15 @@
 package main
 
 import (
-	"bufio"
 	"crypto/aes"
 	"crypto/cipher"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"os"
 	"strings"
 
-	"gitlab.com/NebulousLabs/errors"
 	"golang.org/x/crypto/blake2b"
 	"golang.org/x/term"
 )
@@ -20,15 +19,6 @@ const (
 	FileExtension = ".aes"
 	FilePerm      = 0600
 )
-
-// readFile opens the given file for reading and returns a reader and a closing function.
-func readFile(fPath string) (r *bufio.Reader, closeFn func() error, err error) {
-	file, err := os.Open(fPath)
-	if err != nil {
-		return nil, nil, err
-	}
-	return bufio.NewReader(file), file.Close, nil
-}
 
 // readPasswordFromTerminal prompts the user to enter a password and then reads
 // it from stdin.
@@ -51,18 +41,20 @@ func readPasswordFromTerminal() (passwd []byte, err error) {
 	return passwd, nil
 }
 
-func outputFile(inputFile string, actionEncrypt bool) (*os.File, string, error) {
-	var outputFile string
+// createOutputFile determines the name of the required output file and creates
+// it. It does *NOT* close it - that is a responsibility of the caller.
+func createOutputFile(inFileName string, actionEncrypt bool) (*os.File, string, error) {
+	var outFileName string
 	if actionEncrypt {
-		outputFile = inputFile + FileExtension
+		outFileName = inFileName + FileExtension
 	} else {
-		outputFile = strings.TrimSuffix(inputFile, FileExtension)
+		outFileName = strings.TrimSuffix(inFileName, FileExtension)
 	}
 	// Check if the output file already exists and (if so) whether the user
 	// wants to overwrite it or not.
-	if _, err := os.Stat(outputFile); err == nil {
+	if _, err := os.Stat(outFileName); err == nil {
 		for {
-			fmt.Printf("Output file %s already exists.\nDo you want to overwrite it? (y/n) ", outputFile)
+			fmt.Printf("Output file %s already exists.\nDo you want to overwrite it? (y/n) ", outFileName)
 			var answer string
 			_, err = fmt.Scanln(&answer)
 			if err != nil {
@@ -77,23 +69,23 @@ func outputFile(inputFile string, actionEncrypt bool) (*os.File, string, error) 
 			}
 		}
 	}
-	outFile, err := os.OpenFile(outputFile, os.O_CREATE|os.O_WRONLY, FilePerm)
+	outFile, err := os.OpenFile(outFileName, os.O_CREATE|os.O_WRONLY, FilePerm)
 	if err != nil {
-		return nil, "", fmt.Errorf("Failed to open output file %s for writing! Error: %v\n", outputFile, err)
+		return nil, "", fmt.Errorf("Failed to open output file %s for writing! Error: %v\n", outFileName, err)
 	}
-	return outFile, outputFile, nil
+	return outFile, outFileName, nil
 }
 
-// encDec handles encryption and decryption.
-func encDec(filename string, actionEncrypt bool) error {
-	inFile, closeFn, err := readFile(filename)
+// encodeDecode handles encryption and decryption.
+func encodeDecode(filename string, actionEncrypt bool) error {
+	inFile, err := os.Open(filename)
 	if err != nil {
 		fmt.Printf("Failed to read file %s! Error: %v\n", filename, err)
 		os.Exit(1)
 	}
-	defer func() { _ = closeFn() }()
+	defer func() { _ = inFile.Close() }()
 
-	outFile, outFName, err := outputFile(filename, actionEncrypt)
+	outFile, outFName, err := createOutputFile(filename, actionEncrypt)
 	if err != nil {
 		fmt.Println(err)
 		os.Exit(1)
@@ -138,12 +130,14 @@ func encDec(filename string, actionEncrypt bool) error {
 	if actionEncrypt {
 		nonce := make([]byte, aead.NonceSize())
 		outBytes = aead.Seal(nonce, nonce, inBytes, nil)
+		inBytes = nil
 	} else {
 		nonceSize := aead.NonceSize()
 		if len(inBytes) < nonceSize {
 			return errors.New("Unexpected end of ciphertext.")
 		}
 		nonce, ciphertext := inBytes[:nonceSize], inBytes[nonceSize:]
+		inBytes = nil
 		outBytes, err = aead.Open(nil, nonce, ciphertext, nil)
 		if err != nil {
 			return err
@@ -182,7 +176,7 @@ func main() {
 	}
 	inFName := flag.Arg(0)
 
-	err := encDec(inFName, *actionEncrypt)
+	err := encodeDecode(inFName, *actionEncrypt)
 	if err != nil {
 		fmt.Println(err)
 		os.Exit(1)
