@@ -5,11 +5,6 @@ A simple file encrypt/decrypt tool.
 The tool uses [Go](https://go.dev/)'s built-in [crypto/aes](https://pkg.go.dev/crypto/aes) library to encrypt the input
 file with [AES-256](https://en.wikipedia.org/wiki/Advanced_Encryption_Standard).
 
-### Caveat
-
-Currently, the `aes256cli` reads the entire input file in memory before encrypting it and writing it to disk. This means
-that you can easily run out of memory if you try encrypting a large file. I hope to address this in the near future.
-
 ## Installation
 
 If you have [Go](https://go.dev/) installed:
@@ -17,8 +12,6 @@ If you have [Go](https://go.dev/) installed:
 ```shell
 go install github.com/ro-tex/aes256cli@latest
 ```
-
-If you prefer a binary, you can download a Linux amd64 one from https://github.com/ro-tex/aes256cli/releases.
 
 ## Usage
 
