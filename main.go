@@ -3,6 +3,7 @@ package main
 import (
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/rand"
 	"errors"
 	"flag"
 	"fmt"
@@ -129,6 +130,9 @@ func encodeDecode(filename string, actionEncrypt bool) error {
 	var outBytes []byte
 	if actionEncrypt {
 		nonce := make([]byte, aead.NonceSize())
+		if _, err := rand.Read(nonce); err != nil {
+			return err
+		}
 		outBytes = aead.Seal(nonce, nonce, inBytes, nil)
 		inBytes = nil
 	} else {
