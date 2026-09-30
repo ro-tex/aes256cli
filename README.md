@@ -7,10 +7,25 @@ file with [AES-256](https://en.wikipedia.org/wiki/Advanced_Encryption_Standard).
 
 ## Installation
 
-If you have [Go](https://go.dev/) installed:
+### Build it from source
+
+You will need [Go](https://go.dev/) for this.
 
 ```shell
 go install github.com/ro-tex/aes256cli@latest
+```
+
+### Use [Homebrew](https://brew.sh/)
+
+```shell
+brew install ro-tex/tap/aes256cli
+```
+
+or
+
+```
+brew tap ro-tex/tap
+brew install aes256cli
 ```
 
 ## Usage
