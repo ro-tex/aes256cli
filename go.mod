@@ -1,6 +1,6 @@
 module github.com/ro-tex/aes256cli
 
-go 1.26.0
+go 1.27.1
 
 require (
 	golang.org/x/crypto v0.57.0
