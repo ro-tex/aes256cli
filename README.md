@@ -27,6 +27,13 @@ To decrypt a file:
 aes256cli -d myFile.dat.aes
 ```
 
+To print the version and the git commit the binary was built from:
+
+```shell
+$ aes256cli -v
+aes256cli v0.1.0 (commit 508e3d9)
+```
+
 To see the usage information run the tool without parameters:
 
 ```shell
@@ -43,4 +50,19 @@ aes256cli [operation] FILENAME
   -e    encrypt a file
   -encrypt
         encrypt a file
+  -v    print version and commit hash
+  -version
+        print version and commit hash
 ```
+
+## Building
+
+The version and commit hash are injected at build time via `ldflags`:
+
+```shell
+go build -ldflags "-X main.version=v0.1.0 -X main.commit=$(git rev-parse HEAD)" .
+```
+
+Without these flags, the binary reports version `dev` and commit `none`.
+
+Only the first 7 characters of the commit hash are printed, so passing either the full or the short hash works.

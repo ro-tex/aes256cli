@@ -20,6 +20,16 @@ const (
 	FilePerm      = 0600
 )
 
+// These are set at build time via ldflags, e.g.:
+// go build -ldflags "-X main.version=v1.0.0 -X main.commit=$(git rev-parse HEAD)"
+var (
+	version = "dev"
+	commit  = "none"
+)
+
+// shortCommitLen is the number of characters of the commit hash to display.
+const shortCommitLen = 7
+
 // readPasswordFromTerminal prompts the user to enter a password and then reads
 // it from stdin.
 func readPasswordFromTerminal() (passwd []byte, err error) {
@@ -161,7 +171,18 @@ func main() {
 	flag.BoolVar(actionEncrypt, "e", false, "encrypt a file")
 	actionDecrypt := flag.Bool("decrypt", false, "decrypt a file")
 	flag.BoolVar(actionDecrypt, "d", false, "decrypt a file")
+	printVersion := flag.Bool("version", false, "print version and commit hash")
+	flag.BoolVar(printVersion, "v", false, "print version and commit hash")
 	flag.Parse()
+
+	if *printVersion {
+		shortCommit := commit
+		if len(shortCommit) > shortCommitLen {
+			shortCommit = shortCommit[:shortCommitLen]
+		}
+		fmt.Printf("%s %s (commit %s)\n", BinName, version, shortCommit)
+		return
+	}
 
 	if (!*actionEncrypt && !*actionDecrypt) || (*actionEncrypt && *actionDecrypt) {
 		fmt.Println("You must choose to either encrypt (-e/--encrypt) or decrypt (-d/--decrypt) a file.\n")
