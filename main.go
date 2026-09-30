@@ -1,9 +1,12 @@
 package main
 
 import (
+	"bufio"
+	"bytes"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
+	"encoding/binary"
 	"errors"
 	"flag"
 	"fmt"
@@ -19,6 +22,30 @@ const (
 	BinName       = "aes256cli"
 	FileExtension = ".aes"
 	FilePerm      = 0600
+
+	// ChunkSize is the amount of plaintext (in bytes) sealed per chunk when
+	// streaming. Keeping it fixed-size lets us stream arbitrarily large files
+	// while only ever holding one chunk in memory. 64KiB matches what other
+	// chunked-AEAD formats (e.g. age) use.
+	ChunkSize = 64 * 1024
+)
+
+// formatMagic prefixes files written by the current (streaming/chunked)
+// format, right before the base nonce. Files written by the original,
+// non-chunked implementation start directly with a random 12-byte nonce, so
+// on decrypt we can tell the two formats apart by checking for this magic.
+// A legacy file matching it by chance is a ~1-in-4-billion coincidence.
+var formatMagic = []byte("AEC2")
+
+// adContinue/adFinal are used as GCM associated data on each chunk to mark
+// whether more chunks follow. Because the associated data is authenticated,
+// an attacker cannot truncate the ciphertext stream without the last chunk
+// they leave in place failing to decrypt (it will have been sealed with
+// adContinue, but the decryptor - having reached the real end of the file -
+// will expect adFinal).
+var (
+	adContinue = []byte{0x00}
+	adFinal    = []byte{0x01}
 )
 
 // readPasswordFromTerminal prompts the user to enter a password and then reads
@@ -77,6 +104,101 @@ func createOutputFile(inFileName string, actionEncrypt bool) (*os.File, string, 
 	return outFile, outFileName, nil
 }
 
+// chunkNonce derives the per-chunk nonce from the file's random base nonce
+// and a monotonically increasing chunk counter, by XORing the counter (as
+// big-endian) into the low 8 bytes of the base nonce. Every chunk in a file
+// therefore gets a distinct nonce (the counter never repeats within a
+// file), while the untouched high bytes of the base nonce keep the
+// birthday-bound collision resistance across different files/passwords that
+// the original per-file random nonce provided.
+func chunkNonce(base []byte, counter uint64) []byte {
+	nonce := make([]byte, len(base))
+	copy(nonce, base)
+	var ctrBytes [8]byte
+	binary.BigEndian.PutUint64(ctrBytes[:], counter)
+	offset := len(nonce) - len(ctrBytes)
+	for i, b := range ctrBytes {
+		nonce[offset+i] ^= b
+	}
+	return nonce
+}
+
+// streamEncrypt reads plaintext from r in fixed-size chunks and writes each
+// sealed chunk to w, so the whole file never has to be held in memory. The
+// last chunk (which may be empty, e.g. for a 0-byte input file) is sealed
+// with adFinal so the decryptor can detect a truncated ciphertext stream.
+func streamEncrypt(r io.Reader, w io.Writer, aead cipher.AEAD, baseNonce []byte) error {
+	in := bufio.NewReaderSize(r, ChunkSize+1)
+	out := bufio.NewWriter(w)
+
+	buf := make([]byte, ChunkSize)
+	for counter := uint64(0); ; counter++ {
+		n, err := io.ReadFull(in, buf)
+		if err != nil && err != io.ErrUnexpectedEOF && err != io.EOF {
+			return err
+		}
+		// Peek to see whether any plaintext remains beyond this chunk.
+		_, peekErr := in.Peek(1)
+		isFinal := peekErr != nil
+
+		ad := adContinue
+		if isFinal {
+			ad = adFinal
+		}
+		ciphertext := aead.Seal(nil, chunkNonce(baseNonce, counter), buf[:n], ad)
+		if _, err := out.Write(ciphertext); err != nil {
+			return err
+		}
+		if isFinal {
+			break
+		}
+	}
+	return out.Flush()
+}
+
+// streamDecrypt is the inverse of streamEncrypt: it reads sealed chunks
+// from r, verifies and decrypts each one, and writes the recovered
+// plaintext to w. It rejects a ciphertext stream that ends before a chunk
+// marked final was seen (truncation) as well as one with extra trailing
+// bytes after the final chunk.
+func streamDecrypt(r io.Reader, w io.Writer, aead cipher.AEAD, baseNonce []byte) error {
+	overhead := aead.Overhead()
+	chunkCipherSize := ChunkSize + overhead
+
+	in := bufio.NewReaderSize(r, chunkCipherSize+1)
+	out := bufio.NewWriter(w)
+
+	buf := make([]byte, chunkCipherSize)
+	for counter := uint64(0); ; counter++ {
+		n, err := io.ReadFull(in, buf)
+		if err != nil && err != io.ErrUnexpectedEOF && err != io.EOF {
+			return err
+		}
+		if n < overhead {
+			return errors.New("Unexpected end of ciphertext.")
+		}
+		// Peek to see whether any ciphertext remains beyond this chunk.
+		_, peekErr := in.Peek(1)
+		isFinal := peekErr != nil
+
+		ad := adContinue
+		if isFinal {
+			ad = adFinal
+		}
+		plaintext, err := aead.Open(nil, chunkNonce(baseNonce, counter), buf[:n], ad)
+		if err != nil {
+			return errors.New("Decryption failed: wrong password, or file is corrupted/truncated/tampered with.")
+		}
+		if _, err := out.Write(plaintext); err != nil {
+			return err
+		}
+		if isFinal {
+			break
+		}
+	}
+	return out.Flush()
+}
+
 // encodeDecode handles encryption and decryption.
 func encodeDecode(filename string, actionEncrypt bool) error {
 	inFile, err := os.Open(filename)
@@ -120,35 +242,55 @@ func encodeDecode(filename string, actionEncrypt bool) error {
 		fmt.Println(err)
 	}
 
-	// Read the input file in memory. Yes, this is not great.
-	inBytes, err := io.ReadAll(inFile)
-	if err != nil {
-		return err
-	}
-
-	// Encrypt or decrypt.
-	var outBytes []byte
 	if actionEncrypt {
-		nonce := make([]byte, aead.NonceSize())
-		if _, err := rand.Read(nonce); err != nil {
+		baseNonce := make([]byte, aead.NonceSize())
+		if _, err := rand.Read(baseNonce); err != nil {
 			return err
 		}
-		outBytes = aead.Seal(nonce, nonce, inBytes, nil)
-		inBytes = nil
+		if _, err := outFile.Write(formatMagic); err != nil {
+			return err
+		}
+		if _, err := outFile.Write(baseNonce); err != nil {
+			return err
+		}
+		err = streamEncrypt(inFile, outFile, aead, baseNonce)
 	} else {
-		nonceSize := aead.NonceSize()
-		if len(inBytes) < nonceSize {
-			return errors.New("Unexpected end of ciphertext.")
-		}
-		nonce, ciphertext := inBytes[:nonceSize], inBytes[nonceSize:]
-		inBytes = nil
-		outBytes, err = aead.Open(nil, nonce, ciphertext, nil)
-		if err != nil {
-			return err
+		// Peek at the first few bytes to tell current-format (chunked, magic
+		// prefixed) files apart from files written by the original
+		// non-chunked implementation, which start directly with a random
+		// nonce and carry no magic.
+		in := bufio.NewReader(inFile)
+		magicBuf := make([]byte, len(formatMagic))
+		magicN, magicErr := io.ReadFull(in, magicBuf)
+
+		if magicErr == nil && bytes.Equal(magicBuf, formatMagic) {
+			baseNonce := make([]byte, aead.NonceSize())
+			if _, err := io.ReadFull(in, baseNonce); err != nil {
+				return errors.New("Unexpected end of ciphertext.")
+			}
+			err = streamDecrypt(in, outFile, aead, baseNonce)
+		} else {
+			// Legacy (pre-chunking) format: a single nonce followed by the
+			// entire file sealed as one GCM message. This has to be
+			// buffered in full - it was encrypted as one atomic blob, so
+			// there is no way to verify or decrypt it incrementally.
+			rest, err := io.ReadAll(in)
+			if err != nil {
+				return err
+			}
+			inBytes := append(magicBuf[:magicN], rest...)
+			nonceSize := aead.NonceSize()
+			if len(inBytes) < nonceSize {
+				return errors.New("Unexpected end of ciphertext.")
+			}
+			nonce, ciphertext := inBytes[:nonceSize], inBytes[nonceSize:]
+			var outBytes []byte
+			outBytes, err = aead.Open(nil, nonce, ciphertext, nil)
+			if err == nil {
+				_, err = outFile.Write(outBytes)
+			}
 		}
 	}
-	// Write the output to disk.
-	_, err = outFile.Write(outBytes)
 	// If there is no error, then the operation was successful, and we should
 	// not remove the output file.
 	success = err == nil
