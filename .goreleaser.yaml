@@ -37,23 +37,12 @@ homebrew_casks:
     binaries:
       - aes256cli
     homepage: https://github.com/ro-tex/aes256cli
-    description: A simple file encrypt/decrypt tool using AES-256.
+    description: "Encrypt and decrypt files with AES-256"
     license: MIT
-    commit_author:
-      name: goreleaserbot
-      email: bot@goreleaser.com
-    commit_msg_template: "Brew cask update for {{ .ProjectName }} version {{ .Tag }}"
+    # GoReleaser only generates the cask. `just release` adds the quarantine
+    # step as `postflight_steps`, which GoReleaser can't generate, checks it
+    # with `brew style` and pushes it to the tap.
+    skip_upload: true
     repository:
       owner: ro-tex
       name: homebrew-tap
-      git:
-        url: git@github.com:ro-tex/homebrew-tap.git
-        private_key: /Users/inovakov/.ssh/id_ed25519
-    hooks:
-      post:
-        install: |
-          if OS.mac?
-            # The binary is not signed, so remove the quarantine attribute
-            # to keep macOS Gatekeeper from blocking it.
-            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/aes256cli"]
-          end
