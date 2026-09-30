@@ -97,7 +97,7 @@ func createOutputFile(inFileName string, actionEncrypt bool) (*os.File, string, 
 			}
 		}
 	}
-	outFile, err := os.OpenFile(outFileName, os.O_CREATE|os.O_WRONLY, FilePerm)
+	outFile, err := os.OpenFile(outFileName, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, FilePerm)
 	if err != nil {
 		return nil, "", fmt.Errorf("Failed to open output file %s for writing! Error: %v\n", outFileName, err)
 	}
@@ -199,6 +199,21 @@ func streamDecrypt(r io.Reader, w io.Writer, aead cipher.AEAD, baseNonce []byte)
 	return out.Flush()
 }
 
+// legacyDecrypt decrypts data written by the original, non-chunked
+// implementation: a single nonce followed by the entire plaintext sealed as
+// one GCM message. Kept for backward compatibility with files that predate
+// the chunked/streaming format. Because that format authenticates the whole
+// file as one atomic blob, it has to be fully buffered - there is no way to
+// verify or decrypt it incrementally.
+func legacyDecrypt(ciphertext []byte, aead cipher.AEAD) ([]byte, error) {
+	nonceSize := aead.NonceSize()
+	if len(ciphertext) < nonceSize {
+		return nil, errors.New("Unexpected end of ciphertext.")
+	}
+	nonce, sealed := ciphertext[:nonceSize], ciphertext[nonceSize:]
+	return aead.Open(nil, nonce, sealed, nil)
+}
+
 // encodeDecode handles encryption and decryption.
 func encodeDecode(filename string, actionEncrypt bool) error {
 	inFile, err := os.Open(filename)
@@ -270,22 +285,13 @@ func encodeDecode(filename string, actionEncrypt bool) error {
 			}
 			err = streamDecrypt(in, outFile, aead, baseNonce)
 		} else {
-			// Legacy (pre-chunking) format: a single nonce followed by the
-			// entire file sealed as one GCM message. This has to be
-			// buffered in full - it was encrypted as one atomic blob, so
-			// there is no way to verify or decrypt it incrementally.
-			rest, err := io.ReadAll(in)
-			if err != nil {
-				return err
+			rest, rerr := io.ReadAll(in)
+			if rerr != nil {
+				return rerr
 			}
 			inBytes := append(magicBuf[:magicN], rest...)
-			nonceSize := aead.NonceSize()
-			if len(inBytes) < nonceSize {
-				return errors.New("Unexpected end of ciphertext.")
-			}
-			nonce, ciphertext := inBytes[:nonceSize], inBytes[nonceSize:]
 			var outBytes []byte
-			outBytes, err = aead.Open(nil, nonce, ciphertext, nil)
+			outBytes, err = legacyDecrypt(inBytes, aead)
 			if err == nil {
 				_, err = outFile.Write(outBytes)
 			}
@@ -310,13 +316,13 @@ func main() {
 	flag.Parse()
 
 	if (!*actionEncrypt && !*actionDecrypt) || (*actionEncrypt && *actionDecrypt) {
-		fmt.Println("You must choose to either encrypt (-e/--encrypt) or decrypt (-d/--decrypt) a file.\n")
+		fmt.Println("You must choose to either encrypt (-e/--encrypt) or decrypt (-d/--decrypt) a file.")
 		flag.Usage()
 		os.Exit(1)
 	}
 
 	if flag.NArg() == 0 {
-		fmt.Println("No filename given.\n")
+		fmt.Println("No filename given.")
 		flag.Usage()
 		os.Exit(1)
 	}
