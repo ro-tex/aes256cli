@@ -1,6 +1,6 @@
 # https://github.com/casey/just
 
-import '~/justfile'
+import? '~/justfile'
 
 build:
 	goreleaser build --clean --snapshot

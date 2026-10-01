@@ -32,6 +32,10 @@ changelog:
       - "^docs:"
       - "^test:"
 
+release:
+  # Mark versions like v1.2.3-rc.1 as pre-releases on GitHub.
+  prerelease: auto
+
 homebrew_casks:
   - name: aes256cli
     binaries:
